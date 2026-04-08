@@ -1,0 +1,115 @@
+import FreeCAD as App
+import Part
+import math
+import FreeCADGui as Gui
+
+def build_stealth_fads_system():
+    doc_name = "Stealth_FADS_Design"
+    doc = App.activeDocument()
+    if not doc:
+        doc = App.newDocument(doc_name)
+    else:
+        for obj in doc.Objects:
+            doc.removeObject(obj.Name)
+
+    print("Generating Flush-Port Radome...")
+
+    # --- PARAMETERS (mm) ---
+    L = 600.0        
+    R = 300.0        
+    thick = 5.0      # Shell thickness
+    
+    # 1. CREATE HOLLOW RADOME SHELL
+    steps = 200
+    # Outer Surface
+    outer_pts = [App.Vector(x, R * math.sqrt(x/L), 0) for x in [i * L / steps for i in range(steps + 1)]]
+    outer_wire = Part.makePolygon(outer_pts + [App.Vector(L, 0, 0), App.Vector(0, 0, 0)])
+    outer_solid = Part.Face(Part.Wire(outer_wire.Edges)).revolve(App.Vector(0,0,0), App.Vector(1,0,0), 360)
+    
+    # Inner Cavity (The space inside)
+    inner_pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        x_val = thick + t * (L - thick)
+        y_val = (R - thick) * math.sqrt((x_val - thick) / (L - thick))
+        inner_pts.append(App.Vector(x_val, y_val, 0))
+    inner_wire = Part.makePolygon(inner_pts + [App.Vector(L, 0, 0), App.Vector(thick, 0, 0)])
+    inner_solid = Part.Face(Part.Wire(inner_wire.Edges)).revolve(App.Vector(0,0,0), App.Vector(1,0,0), 360)
+    
+    # Create the shell
+    radome_shell = outer_solid.cut(inner_solid)
+
+    # 2. INTERNAL PACKAGING
+    antenna = Part.makeCylinder(R*0.5, 10, App.Vector(160, 0, 0), App.Vector(1, 0, 0))
+    aesa = Part.makeBox(70, 140, 140, App.Vector(185, -70, -70))
+    cooling = Part.makeBox(15, 150, 150, App.Vector(265, -75, -75))
+    processor = Part.makeBox(110, 110, 110, App.Vector(290, -55, -55))
+    manifold = Part.makeBox(30, 60, 60, App.Vector(410, -30, 40)) # Tubing destination
+    psu = Part.makeBox(90, 130, 100, App.Vector(410, -65, -60))
+    interface = Part.makeBox(20, 50, 50, App.Vector(520, -25, -25))
+
+    # 3. FLUSH FADS PORTS AND INTERNAL TUBING
+    port_configs = [(35, 0), (110, 45), (110, 135), (110, 225), (110, 315)]
+    tube_shapes = []
+    
+    for i, (x_p, angle) in enumerate(port_configs):
+        rad = math.radians(angle)
+        # Coordinates on Outer Surface
+        y_out = R * math.sqrt(x_p / L) * math.cos(rad)
+        z_out = R * math.sqrt(x_p / L) * math.sin(rad)
+        pos_outer = App.Vector(x_p, y_out, z_out)
+        
+        # Coordinates on Inner Surface (for Tube start)
+        # We find the corresponding inner x by subtracting thickness impact
+        x_inner = x_p # Simplification for tube start
+        y_in = (R - thick) * math.sqrt(max(0, (x_inner - thick) / (L - thick))) * math.cos(rad)
+        z_in = (R - thick) * math.sqrt(max(0, (x_inner - thick) / (L - thick))) * math.sin(rad)
+        pos_inner = App.Vector(x_inner, y_in, z_in)
+        
+        # Normal vector (Radial)
+        norm = App.Vector(0, y_out, z_out).normalize() if x_p > 5 else App.Vector(-1,0,0)
+        
+        # HOLE CUTTER: Starts outside and goes in.
+        # This ensures the hole is flush and clear.
+        cutter = Part.makeCylinder(2.0, thick * 3, pos_outer + norm*2, -norm)
+        radome_shell = radome_shell.cut(cutter)
+        
+        # INTERNAL TUBE: Starts at pos_inner (inside) and goes to manifold
+        target = App.Vector(410, y_out*0.1, (z_out*0.1) + 40)
+        v_dir = target.sub(pos_inner)
+        v_len = v_dir.Length
+        if v_len > 0:
+            tube = Part.makeCylinder(1.2, v_len)
+            rot = App.Rotation(App.Vector(0,0,1), v_dir)
+            tube.Placement = App.Placement(pos_inner, rot)
+            tube_shapes.append(tube)
+
+    # 4. FINAL RENDERING
+    def show(shape, name, color, trans=0):
+        o = doc.addObject("Part::Feature", name)
+        o.Shape = shape
+        o.ViewObject.ShapeColor = color
+        o.ViewObject.Transparency = trans
+        o.ViewObject.DisplayMode = "Shaded"
+        return o
+
+    # The Radome is shown as a single piece with flush holes
+    rad_obj = show(radome_shell, "Flush_Radome", (0.8, 0.8, 0.8), 70)
+    
+    # Internal Components
+    show(antenna, "Antenna", (0.1, 0.1, 0.5))
+    show(aesa, "AESA_Module", (0.1, 0.4, 0.1))
+    show(cooling, "Cooling_Unit", (0.5, 0.5, 0.5))
+    show(processor, "Processor", (0.2, 0.2, 0.2))
+    show(manifold, "FADS_Manifold", (0.5, 0.1, 0.5))
+    show(psu, "Power_Supply", (0.4, 0.3, 0.1))
+    show(interface, "Data_Interface", (0.1, 0.1, 0.1))
+
+    for i, t in enumerate(tube_shapes):
+        show(t, f"FADS_Tube_{i}", (0.8, 0.0, 0.0))
+
+    doc.recompute()
+    Gui.SendMsgToActiveView("ViewFit")
+    print("Flush-port stealth design complete.")
+
+build_stealth_fads_system()
